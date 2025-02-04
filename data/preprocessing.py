@@ -93,5 +93,4 @@ if __name__ == "__main__":
     y_test.to_csv('y_test.csv', index=False)
     
     print("Data has been saved to CSV files.")
-    print(final_df['SHOT_MADE_FLAG'].value_counts())
 

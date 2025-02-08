@@ -32,8 +32,9 @@ def fetch_player_shots(player_id, player_name, season):
         if shot_data.empty:
             return pd.DataFrame()
         shot_data['PLAYER_NAME'] = player_name
-        shot_data = shot_data[['GAME_ID', 'PLAYER_ID', 'PLAYER_NAME', 'LOC_X', 'LOC_Y', 'SHOT_ATTEMPTED_FLAG', 
-                               'SHOT_MADE_FLAG']]
+        shot_data = shot_data[['GAME_ID', 'PLAYER_ID', 'PLAYER_NAME', 'SHOT_ZONE_BASIC', 'SHOT_ZONE_AREA',
+                               'SHOT_ZONE_RANGE', 'SHOT_DISTANCE', 'SHOT_ATTEMPTED_FLAG', 
+                               'SHOT_MADE_FLAG', 'GAME_DATE']]
         time.sleep(API_DELAY)
         return shot_data
     except Exception as e:
@@ -77,16 +78,16 @@ def merge_data(shot_df, defense_df):
 
 def preprocess_data(input_file, output_file):
     df = pd.read_csv(input_file)
-
-    # --- Normalize Numerical Features ---
-    numerical_features = ["LOC_X", "LOC_Y"]
+    df['SHOT_ZONE_FG'] = df.groupby("SHOT_ZONE_BASIC")["SHOT_MADE_FLAG"].transform("mean")
+    categorical_features = ["SHOT_ZONE_BASIC", "SHOT_ZONE_AREA", "SHOT_ZONE_RANGE"]
+    one_hot_encoder = OneHotEncoder(sparse_output=False, drop="first")
+    encoded_features = one_hot_encoder.fit_transform(df[categorical_features])
+    encoded_df = pd.DataFrame(encoded_features, columns=one_hot_encoder.get_feature_names_out())
+    df = pd.concat([df, encoded_df], axis=1).drop(columns=categorical_features)
+    numerical_features = ["SHOT_DISTANCE"]
     scaler = StandardScaler()
     df[numerical_features] = scaler.fit_transform(df[numerical_features])
-
-    # --- Interaction Term: Shot Attempted with Location ---
-    df["LOC_XY_ATTEMPTED"] = (df["LOC_X"] ** 2 + df["LOC_Y"] ** 2) ** 0.5 * df["SHOT_ATTEMPTED_FLAG"]
-
-    # --- Save Processed Data ---
+    df["SHOT_DIST_ATTEMPTED"] = df["SHOT_DISTANCE"] * df["SHOT_ATTEMPTED_FLAG"]
     df.to_csv(output_file, index=False)
 
 if __name__ == "__main__":

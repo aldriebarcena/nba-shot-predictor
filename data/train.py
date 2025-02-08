@@ -46,26 +46,31 @@ class FGPercentageModel:
 
         # If def_rating is provided, adjust FG%, otherwise return the raw FG%
         if def_rating is not None:
-            adjusted_percentage = self.adjusted_fg_percentage(fg_percentage, def_rating)
-            return round(adjusted_percentage * 100, 2)  # Return as percentage (0-100 scale)
-        else:
-            return round(fg_percentage * 100, 2)  # Return as percentage (0-100 scale)
+            fg_percentage = self.adjusted_fg_percentage(fg_percentage, def_rating)
+        
+        rounded_percentage = round(fg_percentage * 100, 2)
+
+        return f"{player_name} has a predicted FG% of {rounded_percentage}% if they shoot from the {shot_zone_area} {shot_zone_basic} from {shot_zone_range} and guarded by a defensive rating of {def_rating}."
+
 
     def adjusted_fg_percentage(self, fg_percentage, defender_drting):
-        # Normalize DRtg to be in a reasonable range (assuming 90-120 is typical for DRtg)
-        defender_multiplier = 1- (120 - defender_drting) / 100
+        # Normalize DRtg: Scale 104-123 to a range of 0.9 (best) to 1.1 (worst)
+        # - 104 (best DRtg) maps to 0.9 (reducing FG% the most)
+        # - 123 (worst DRtg) maps to 1.1 (increasing FG% the most)
+        defender_multiplier = 0.75 + (defender_drting - 104) * (0.2 / 19)
         
-        # Adjust the player's FG% based on the defender's rating
+        # Adjust FG% based on defender’s rating
         adjusted_fg = fg_percentage * defender_multiplier
         
-        # Ensure the adjusted FG% is between 0 and 1
+        # Ensure FG% remains within valid bounds (0 to 1)
         adjusted_fg = max(0, min(1, adjusted_fg))
         
         return adjusted_fg
 
 
-
 # Example usage
 fg_model = FGPercentageModel("warriors_player_shots_with_defense.csv")
 fg_model.train()
-print(fg_model.predict("Stephen Curry", "Above the Break 3", "Right Side Center(RC)", "24+ ft.", 26, 102.9))
+print(fg_model.predict("Kevon Looney", "Above the Break 3", "Center(C)", "24+ ft.", 25))
+# shai - 104
+# sexton - 123

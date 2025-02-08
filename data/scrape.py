@@ -1,34 +1,102 @@
 import pandas as pd
+from nba_api.stats.static import players
+from nba_api.stats.endpoints import shotchartdetail, leaguedashplayerstats
+import time
+from tqdm import tqdm
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-# Load your dataset (assuming it's a CSV file)
-df = pd.read_csv("data/warriors_player_shots_with_defense.csv")
-# df.columns = df.columns.str.strip()  # Removes leading/trailing spaces from column names
-# df["SHOT_ZONE_BASIC"] = df["SHOT_ZONE_BASIC"].astype(str)
+# Constants
+API_DELAY = 1
+RAW_OUTPUT_FILE = 'all_players_shots_with_defense_all_time.csv'
+PROCESSED_OUTPUT_FILE = 'processed_data_all_time.csv'
 
-# print(df.head())
+def get_all_active_nba_players(season):
+    # Fetch player stats for the given season
+    player_stats = leaguedashplayerstats.LeagueDashPlayerStats(season=season).get_data_frames()[0]
+    
+    # Select relevant columns and rename them
+    active_players = player_stats[['PLAYER_ID', 'PLAYER_NAME']]
+    active_players = active_players.rename(columns={'PLAYER_ID': 'id', 'PLAYER_NAME': 'full_name'})
+    
+    return active_players
 
-# # --- Create Derived Features ---
-# Compute FG% per shot zone as a reference
-shot_zone_fg = df.groupby("SHOT_ZONE_BASIC")["SHOT_MADE_FLAG"].mean().rename("SHOT_ZONE_FG")
-df = df.merge(shot_zone_fg, on="SHOT_ZONE_BASIC", how="left")
+def get_most_recent_season():
+    current_year = pd.Timestamp.today().year
+    return f"{current_year - 1}-{str(current_year)[-2:]}"
 
-# --- One-Hot Encode Categorical Variables ---
-categorical_features = ["SHOT_ZONE_BASIC", "SHOT_ZONE_AREA", "SHOT_ZONE_RANGE"]
-one_hot_encoder = OneHotEncoder(sparse_output=False, drop="first")
-encoded_features = one_hot_encoder.fit_transform(df[categorical_features])
-encoded_df = pd.DataFrame(encoded_features, columns=one_hot_encoder.get_feature_names_out())
+def fetch_player_shots(player_id, player_name, season):
+    try:
+        shot_data = shotchartdetail.ShotChartDetail(
+            player_id=player_id,
+            season_nullable=season,  # ALL is used for all-time stats
+            team_id=0,
+            context_measure_simple='FGA'
+        ).get_data_frames()[0]
+        if shot_data.empty:
+            return pd.DataFrame()
+        shot_data['PLAYER_NAME'] = player_name
+        shot_data = shot_data[['GAME_ID', 'PLAYER_ID', 'PLAYER_NAME', 'SHOT_ZONE_BASIC', 'SHOT_ZONE_AREA',
+                               'SHOT_ZONE_RANGE', 'SHOT_DISTANCE', 'SHOT_ATTEMPTED_FLAG', 
+                               'SHOT_MADE_FLAG', 'GAME_DATE']]
+        time.sleep(API_DELAY)
+        return shot_data
+    except Exception as e:
+        print(f"Error fetching shot data for {player_name} (ID: {player_id}): {e}")
+        return pd.DataFrame()
 
-df = pd.concat([df, encoded_df], axis=1)
-df.drop(columns=categorical_features, inplace=True)
+def fetch_defensive_data(player_id, player_name, season):
+    try:
+        defense_stats = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=season,
+            per_mode_detailed="PerGame",
+            measure_type_detailed_defense="Advanced"
+        ).get_data_frames()[0]
+        player_defense = defense_stats[defense_stats['PLAYER_ID'] == player_id]
+        if player_defense.empty:
+            return pd.DataFrame()
+        player_defense = player_defense[['PLAYER_ID', 'PLAYER_NAME', 'DEF_RATING']]
+        time.sleep(API_DELAY)
+        return player_defense
+    except Exception as e:
+        print(f"Error fetching defensive data for {player_name} (ID: {player_id}): {e}")
+        return pd.DataFrame()
 
-# --- Normalize Numerical Features ---
-numerical_features = ["SHOT_DISTANCE", "LOC_X", "LOC_Y"]
-scaler = StandardScaler()
-df[numerical_features] = scaler.fit_transform(df[numerical_features])
+def fetch_all_data(player_df, season):
+    shot_results, defense_results = [], []
+    for _, row in tqdm(player_df.iterrows(), total=len(player_df), desc="Processing Players"):
+        shot_data = fetch_player_shots(row['id'], row['full_name'], season)
+        if not shot_data.empty:
+            shot_results.append(shot_data)
+        defense_data = fetch_defensive_data(row['id'], row['full_name'], season)
+        if not defense_data.empty:
+            defense_results.append(defense_data)
+    all_shots_df = pd.concat(shot_results, ignore_index=True) if shot_results else pd.DataFrame()
+    all_defense_df = pd.concat(defense_results, ignore_index=True) if defense_results else pd.DataFrame()
+    return all_shots_df, all_defense_df
 
-# Interaction term: shot distance & shot attempt
-df["SHOT_DIST_ATTEMPTED"] = df["SHOT_DISTANCE"] * df["SHOT_ATTEMPTED_FLAG"]
+def merge_data(shot_df, defense_df):
+    if defense_df.empty:
+        return shot_df
+    return pd.merge(shot_df, defense_df, how='left', on=['PLAYER_NAME'])
 
-# Save the processed dataset
-df.to_csv("processed_data.csv", index=False)
+def preprocess_data(input_file, output_file):
+    df = pd.read_csv(input_file)
+    df['SHOT_ZONE_FG'] = df.groupby("SHOT_ZONE_BASIC")["SHOT_MADE_FLAG"].transform("mean")
+    categorical_features = ["SHOT_ZONE_BASIC", "SHOT_ZONE_AREA", "SHOT_ZONE_RANGE"]
+    one_hot_encoder = OneHotEncoder(sparse_output=False, drop="first")
+    encoded_features = one_hot_encoder.fit_transform(df[categorical_features])
+    encoded_df = pd.DataFrame(encoded_features, columns=one_hot_encoder.get_feature_names_out())
+    df = pd.concat([df, encoded_df], axis=1).drop(columns=categorical_features)
+    numerical_features = ["SHOT_DISTANCE"]
+    scaler = StandardScaler()
+    df[numerical_features] = scaler.fit_transform(df[numerical_features])
+    df["SHOT_DIST_ATTEMPTED"] = df["SHOT_DISTANCE"] * df["SHOT_ATTEMPTED_FLAG"]
+    df.to_csv(output_file, index=False)
+
+if __name__ == "__main__":
+    season = get_most_recent_season()
+    player_df = get_all_active_nba_players(season)  # Fetch all active players
+    all_shots_df, all_defense_df = fetch_all_data(player_df, season)  # Fetch all-time data
+    final_df = merge_data(all_shots_df, all_defense_df)
+    final_df.to_csv(RAW_OUTPUT_FILE, index=False)
+    preprocess_data(RAW_OUTPUT_FILE, PROCESSED_OUTPUT_FILE)
